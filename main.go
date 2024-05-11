@@ -91,16 +91,12 @@ func main() {
 
 	// run tests in dir or file mode
 	if testFile == "" {
-		dir, err := os.Open(dirtestPath)
+		files, err := os.ReadDir(dirtestPath)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(2)
 		}
-		files, err := dir.Readdir(0)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(2)
-		}
+
 		globalSuccess := true
 		for _, file := range files {
 			testFile = dirtestPath + string(os.PathSeparator) + file.Name()
