@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,9 +47,15 @@ func NewConfig(configPath string) (*Config, error) {
 	return config, nil
 }
 
-type JsonData struct {
-	StartPos string   `json:"startpos"`
-	Moves    []string `json:"moves"`
+type TestsDefinition struct {
+	StartPos string               `json:"startpos"`
+	Moves    []string             `json:"moves"`
+	Nodes    []TestNodeDefinition `json:"nodes,omitempty"`
+}
+
+type TestNodeDefinition struct {
+	Depth int `json:"depth"`
+	Nodes int `json:"nodes"`
 }
 
 func main() {
@@ -56,16 +63,11 @@ func main() {
 	var dirtestPath string
 	var testFile string
 
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		configPath = homeDir + "/.config/perfttester/config.yml"
-	} else {
-		configPath = "perftester.yml"
-	}
+	configPath = ".perfttester.yml"
 
 	flag.StringVar(&configPath, "c", configPath, "path to configuration file")
-	flag.StringVar(&dirtestPath, "d", "perfttests", "tests file to run")
-	flag.StringVar(&testFile, "t", "", "tests file to run")
+	flag.StringVar(&dirtestPath, "d", "perft", "test directory to use")
+	flag.StringVar(&testFile, "t", "", "test file to run")
 	verbose := flag.Bool("v", false, "verbose")
 
 	flag.Usage = func() {
@@ -100,7 +102,7 @@ func main() {
 		globalSuccess := true
 		for _, file := range files {
 			testFile = dirtestPath + string(os.PathSeparator) + file.Name()
-			err, success := runTest(exePath, testFile, *verbose)
+			err, success := runTests(exePath, testFile, *verbose)
 			if err != nil {
 				fmt.Println(err)
 			}
@@ -113,7 +115,7 @@ func main() {
 		}
 	} else {
 		testFile = dirtestPath + string(os.PathSeparator) + testFile
-		err, success := runTest(exePath, testFile, *verbose)
+		err, success := runTests(exePath, testFile, *verbose)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -123,37 +125,65 @@ func main() {
 	}
 }
 
-func runTest(engine string, testfile string, verbose bool) (error, bool) {
+func runTests(engine string, testfile string, verbose bool) (error, bool) {
 	// retrieve testData
 	f, err := os.Open(testfile)
 	if err != nil {
 		return err, false
 	}
 	defer f.Close()
-	var testData JsonData
-	if err := json.NewDecoder(f).Decode(&testData); err != nil {
+	var testsDefinition TestsDefinition
+	if err := json.NewDecoder(f).Decode(&testsDefinition); err != nil {
 		return err, false
 	}
 
-	// run engine
-	cmd := exec.Command(engine, "perfttest", testData.StartPos)
+	// depth = 1
+	result, err := runTestDepth1(engine, testsDefinition.StartPos)
+	if err == nil {
+		if ok := checkResultsDepth1(filepath.Base(testfile), testsDefinition, result, verbose); ok == false {
+			return nil, false
+		}
+	} else {
+		return err, false
+	}
+
+	// depth > 1
+	for _, testNode := range testsDefinition.Nodes {
+		result, err := runTestDepthN(engine, testsDefinition.StartPos, testNode.Depth)
+		if err == nil {
+			if ok := checkResultsDepthN(filepath.Base(testfile), testNode, result, verbose); ok == false {
+				return nil, false
+			}
+		} else {
+			return err, false
+		}
+	}
+
+	return nil, true
+}
+
+type TestResultDepth1 struct {
+	StartPos string   `json:"startpos"`
+	Moves    []string `json:"moves"`
+}
+
+func runTestDepth1(engine string, startpos string) (TestResultDepth1, error) {
+	cmd := exec.Command(engine, "perfttest", startpos, "1")
 	var cmdOut, cmdErr bytes.Buffer
 	cmd.Stdout = &cmdOut
 	cmd.Stderr = &cmdErr
 	if err := cmd.Run(); err != nil {
-		return err, false
+		return TestResultDepth1{}, err
 	}
-
-	// parse testResult
-	var testResult JsonData
+	var testResult TestResultDepth1
 	if err := json.Unmarshal(cmdOut.Bytes(), &testResult); err != nil {
-		return err, false
+		fmt.Println(testResult)
+		return TestResultDepth1{}, err
 	}
-
-	return nil, checkResults(filepath.Base(testfile), testData, testResult, verbose)
+	return testResult, nil
 }
 
-func checkResults(label string, expected JsonData, got JsonData, verbose bool) bool {
+func checkResultsDepth1(label string, expected TestsDefinition, got TestResultDepth1, verbose bool) bool {
 	success := true
 	var verboseErrors []string
 
@@ -192,6 +222,53 @@ func checkResults(label string, expected JsonData, got JsonData, verbose bool) b
 		fmt.Fprintf(os.Stdout, "%s -- OK -- position sfen %s\n", label, expected.StartPos)
 	} else {
 		fmt.Fprintf(os.Stdout, "%s -- KO -- position sfen %s\n", label, expected.StartPos)
+		if verbose {
+			for _, msg := range verboseErrors {
+				fmt.Fprintln(os.Stdout, msg)
+			}
+		}
+	}
+	return success
+}
+
+type TestResultDepthN struct {
+	Depth int `json:"depth"`
+	Nodes int `json:"nodes"`
+}
+
+func runTestDepthN(engine string, startpos string, depth int) (TestResultDepthN, error) {
+	cmd := exec.Command(engine, "perfttest", startpos, strconv.Itoa(depth))
+	var cmdOut, cmdErr bytes.Buffer
+	cmd.Stdout = &cmdOut
+	cmd.Stderr = &cmdErr
+	if err := cmd.Run(); err != nil {
+		fmt.Println(cmd) // FIXME
+		return TestResultDepthN{}, err
+	}
+	var testResult TestResultDepthN
+	if err := json.Unmarshal(cmdOut.Bytes(), &testResult); err != nil {
+		return TestResultDepthN{}, err
+	}
+	return testResult, nil
+}
+
+func checkResultsDepthN(label string, expected TestNodeDefinition, got TestResultDepthN, verbose bool) bool {
+	success := true
+	var verboseErrors []string
+
+	// check nodes count
+	if got.Nodes != expected.Nodes {
+		success = false
+		verboseErrors = append(verboseErrors,
+			fmt.Sprintf("%s -- KO -- nodes count mismatch at depth %d, expected=%d, got=%d", label, expected.Depth, expected.Nodes, got.Nodes),
+		)
+	}
+
+	// final report
+	if success {
+		fmt.Fprintf(os.Stdout, "%s -- OK -- depth %d\n", label, expected.Depth)
+	} else {
+		fmt.Fprintf(os.Stdout, "%s -- KO -- depth %d\n", label, expected.Depth)
 		if verbose {
 			for _, msg := range verboseErrors {
 				fmt.Fprintln(os.Stdout, msg)
