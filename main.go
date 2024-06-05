@@ -151,7 +151,7 @@ func runTests(engine string, testfile string, verbose bool) (error, bool) {
 	for _, testNode := range testsDefinition.Nodes {
 		result, err := runTestDepthN(engine, testsDefinition.StartPos, testNode.Depth)
 		if err == nil {
-			if ok := checkResultsDepthN(filepath.Base(testfile), testNode, result, verbose); ok == false {
+			if ok := checkResultsDepthN(filepath.Base(testfile), testNode, result); ok == false {
 				return nil, false
 			}
 		} else {
@@ -252,28 +252,11 @@ func runTestDepthN(engine string, startpos string, depth int) (TestResultDepthN,
 	return testResult, nil
 }
 
-func checkResultsDepthN(label string, expected TestNodeDefinition, got TestResultDepthN, verbose bool) bool {
-	success := true
-	var verboseErrors []string
-
-	// check nodes count
+func checkResultsDepthN(label string, expected TestNodeDefinition, got TestResultDepthN) bool {
 	if got.Nodes != expected.Nodes {
-		success = false
-		verboseErrors = append(verboseErrors,
-			fmt.Sprintf("%s -- KO -- nodes count mismatch at depth %d, expected=%d, got=%d", label, expected.Depth, expected.Nodes, got.Nodes),
-		)
+		fmt.Fprintf(os.Stdout, "%s -- KO -- nodes count mismatch at depth %d, expected=%d, got=%d\n", label, expected.Depth, expected.Nodes, got.Nodes)
+		return false
 	}
 
-	// final report
-	if success {
-		fmt.Fprintf(os.Stdout, "%s -- OK -- depth %d\n", label, expected.Depth)
-	} else {
-		fmt.Fprintf(os.Stdout, "%s -- KO -- depth %d\n", label, expected.Depth)
-		if verbose {
-			for _, msg := range verboseErrors {
-				fmt.Fprintln(os.Stdout, msg)
-			}
-		}
-	}
-	return success
+	return true
 }
